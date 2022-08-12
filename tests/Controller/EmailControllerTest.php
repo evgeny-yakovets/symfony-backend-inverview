@@ -5,6 +5,7 @@ namespace App\Tests\Controller;
 use App\Entity\Email;
 use App\Entity\EmailVerification;
 use App\Messenger\Message\EmailMessage;
+use App\Messenger\Message\EmailMessageHandler;
 use App\Repository\EmailRepository;
 use App\Service\EmailVerificationClient;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -22,6 +23,7 @@ class EmailControllerTest extends WebTestCase
     private string $path = '/email-verification/';
     private MockObject|EmailVerificationClient $emailVerificationClientMock;
     private MockObject|MessageBusInterface $messageBusMock;
+    private MockObject|EmailMessageHandler $emailMessageHandlerMock;
 
     protected function setUp(): void
     {
@@ -175,5 +177,41 @@ class EmailControllerTest extends WebTestCase
 
         self::assertResponseStatusCodeSame(200);
         self::assertSame($originalNumObjectsInRepository, count($this->repository->findAll()));
+    }
+
+    public function testInvokeEmailMessage(){
+        $created = new \DateTimeImmutable();
+
+        $fixture = new Email();
+        $fixture->setEmail(self::VALID_EMAIL);
+        $fixture->setCreatedAt($created);
+        $fixture->setLastVerifiedAt(null);
+
+        $this->repository->add($fixture, true);
+
+        $originalNumObjectsInRepository = count($this->repository->findAll());
+
+        $this->emailVerificationClientMock->expects($this->never())->method('verify');
+        $this->messageBusMock->expects($this->once())->method('dispatch')
+            ->will($this->returnCallback(function ($emailMessage) use ($fixture) : Envelope {
+                $this->assertEquals(EmailMessage::class, get_class($emailMessage));
+                $this->assertEquals($fixture->getId(), $emailMessage->id);
+                return new Envelope($emailMessage);
+            }));
+
+        $this->client->jsonRequest('POST', sprintf('%s', $this->path), ['email' => self::VALID_EMAIL]);
+        $content = $this->client->getResponse()->getContent();
+
+        /*
+        $this->emailMessageHandlerMock->expects($this->once())->method('__invoke')
+            ->will($this->returnCallback())
+        );*/
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame($originalNumObjectsInRepository, count($this->repository->findAll()));
+        self::assertJson($content);
+        self::assertJsonStringEqualsJsonString(json_encode(['success' => true, 'id' => $fixture->getId()]), $content);
+
+
     }
 }

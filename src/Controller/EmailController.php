@@ -3,14 +3,17 @@
 namespace App\Controller;
 
 use App\Entity\Email;
+use App\Messenger\Message\EmailMessage;
 use App\Repository\EmailRepository;
 use App\Service\EmailVerificationService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
@@ -21,8 +24,8 @@ class EmailController extends AbstractController
     public function new(
         Request $request,
         EmailRepository $emailRepository,
-        EmailVerificationService $emailVerificationService,
         ValidatorInterface $validator,
+        MessageBusInterface $bus,
     ): JsonResponse {
         $email = $request->request->get('email') or throw new BadRequestHttpException("Missing email");
 
@@ -36,11 +39,14 @@ class EmailController extends AbstractController
                 throw new UnprocessableEntityHttpException("Invalid email address provided");
             }
 
-            $emailRepository->add($entity);
+            $emailRepository->add($entity, true);
         }
 
-        // TODO: Move verification to queue
-        $emailVerificationService->verify($entity);
+        try {
+            $bus->dispatch((new EmailMessage($entity))->getMessage());
+        }catch (\Exception $e){
+            $this->json(['error' => $e->getMessage()]);
+        }
 
         return $this->json(['success' => true, 'id' => $entity->getId()]);
     }
@@ -51,9 +57,12 @@ class EmailController extends AbstractController
         $email = $emailRepository->findOneBy(['email' => $email]) or
             throw new NotFoundHttpException('Email not found');
 
-        // TODO: Return 202 code if verification is not yet completed
+        $responseStatus = Response::HTTP_OK;
+        if($email->getLastVerifiedAt() === null){
+            $responseStatus = Response::HTTP_ACCEPTED;
+        }
 
-        return $this->json($email);
+        return $this->json($email,$responseStatus);
     }
 
     #[Route('/{email}', name: 'app_email_delete', methods: ['DELETE'])]
